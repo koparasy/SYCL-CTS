@@ -1,0 +1,177 @@
+:sectnums:
+:xrefstyle: short
+
+= Test plan for SYCL extension KHR kernel properties
+
+This is a test plan for an extension that defines compile-time kernel
+properties with the same effect as the kernel attributes, and a way to embed
+them in a kernel that is defined as a named function object, described in
+https://github.com/KhronosGroup/SYCL-Docs/blob/main/adoc/extensions/sycl_khr_kernel_properties.adoc[sycl_khr_kernel_properties].
+
+== Testing scope
+
+=== Device coverage
+
+All of the tests described below are performed only on the default device that
+is selected on the CTS command line. Tests whose work-group size or sub-group
+size is not supported by the device check that the kernel is not compatible
+with the device and throws `errc::kernel_not_supported` instead, or skip that
+size where noted. A test case that needs a supported sub-group size is skipped
+if the device supports none of the candidate sizes 1, 2, 4, 8, 16, 32 and 64.
+
+=== Feature test macro
+
+The tests should statically check that the `SYCL_KHR_KERNEL_PROPERTIES` macro
+is defined and equal to `1`.
+
+=== Test organization
+
+The tests are split into a compile-time test file and a runtime test file:
+
+* `kernel_properties.cpp` checks the tag type and the properties. If the
+  implementation supports `sycl_khr_split_headers`, it includes only
+  `<sycl/khr/split_headers/version.hpp>`, `<sycl/khr/kernel_properties.hpp>`
+  and the headers it needs for `khr::properties` and the property traits
+  (`<sycl/khr/properties.hpp>`), `queue` and `tag::reduction`; otherwise it
+  includes `<sycl/sycl.hpp>`.
+* `runtime.cpp` checks the effect of embedding the properties in a kernel. It
+  needs a device, so it includes `<sycl/sycl.hpp>`.
+
+=== Comparing with the kernel attributes
+
+Each property must have the same effect as the corresponding attribute,
+including the effect on the kernel information queries. The runtime tests
+compare the `compile_work_group_size` and `compile_sub_group_size` queries of a
+kernel with an embedded property against those of an equivalent kernel
+decorated with the attribute, and the `is_compatible` result of the two
+kernels. Values that only the core specification defines, such as the order in
+which `compile_work_group_size` reports the dimensions, are not checked. The
+exceptions are `compile_sub_group_size`, which the core specification defines
+as the required sub-group size, and `is_compatible` being `false` for an
+unsupported size, which follows from the sizes being optional kernel
+features.
+
+=== Not calling `get`
+
+The implementation must not call the `get` member function. Every `get` member
+function in the runtime tests is declared but not defined, so a call is a link
+error. This assumes that the implementation does not otherwise odr-use `get`,
+for example by taking its address.
+
+== Tests
+
+=== `<sycl/khr/kernel_properties.hpp>`
+
+* Check that `khr::property::tag::kernel` is a complete, empty, trivially
+  default constructible and trivially copyable class that can be constructed
+  in a constant expression.
+* For `work_group_size` and `work_group_size_hint` with 1, 2 and 3 dimensions,
+  and for `sub_group_size`, check that:
+** `is_property`, `is_property_for` and `is_property_or_list_for` for
+   `tag::kernel` are `true` for the property, and `is_property_key`,
+   `is_property_key_compile_time` and `is_property_key_for` for `tag::kernel`
+   are `true` for the key, each inheriting from `std::true_type`;
+** the traits are `false` when the property and the key are swapped;
+** the `_v` variables equal `::value`;
+** the property and the key do not apply to `queue` or `tag::reduction`;
+** the property is trivially copyable;
+** the `value` member has the specified type and holds the template
+   arguments, and can be read through the variable template;
+** different template arguments give different types;
+** a properties list containing the property has its key, and the static
+   `get_property` overload returns the property in a constant expression.
+* Check that `work_group_size_hint` and `work_group_size` have different types
+  and keys.
+* Check that a properties list with all three properties applies to
+  `tag::kernel` but not to `queue`, and that `get_property` returns each of
+  them.
+* Check that a properties list containing a property that does not apply to
+  `tag::kernel` does not apply to it, and that the empty properties list does.
+* Check that the properties of `sycl_khr_properties`, unrelated types and the
+  tag type itself do not apply to `tag::kernel`.
+* Check that the `queue` constructors of `sycl_khr_properties` reject the
+  kernel properties.
+
+=== Embedding properties in a kernel
+
+* For `work_group_size` with 1, 2 and 3 dimensions, embedded as a bare
+  property:
+** check that `is_compatible` equals that of the same kernel decorated with
+   `reqd_work_group_size`;
+** if the device supports the size, check that the kernel runs with an
+   `nd_range` of that work-group size, through `handler::parallel_for` and
+   `queue::parallel_for`; that a different work-group size throws
+   `errc::nd_range` through both; and that `compile_work_group_size` equals
+   that of the attribute kernel;
+** otherwise, check that the kernel is not compatible with the device and
+   that launching it in a single work-group throws
+   `errc::kernel_not_supported` through both invocation functions.
+* Check that a `work_group_size` that no device supports throws
+  `errc::kernel_not_supported`.
+* For `work_group_size_hint` with 1, 2 and 3 dimensions, check that the kernel
+  runs with work-groups of one work-item and, if the device supports it, with
+  the hinted work-group size.
+* For `sub_group_size` with each candidate size, embedded as a bare property:
+** check that `is_compatible` equals that of the same kernel decorated with
+   `reqd_sub_group_size`;
+** if the device supports the size, check that the kernel runs with that
+   sub-group size and that `compile_sub_group_size` equals the size and that of
+   the attribute kernel;
+** otherwise, check that the kernel is not compatible with the device and
+   that launching it with a single work-item throws
+   `errc::kernel_not_supported`.
+* Check that a `sub_group_size` of 4099 throws `errc::kernel_not_supported`
+  unless the device supports it.
+* Check that a kernel can embed `work_group_size` and `sub_group_size` in a
+  single-element properties list and also decorate its function call operator
+  with the attribute with the same value. For `sub_group_size`, an unsupported
+  size must make the kernel incompatible and throw
+  `errc::kernel_not_supported`.
+* Check that an embedded `work_group_size` applies to every function call
+  operator by launching a kernel with an `nd_item<1>` operator through
+  `parallel_for` and a `group<1>` operator through `parallel_for_work_group`,
+  for a work-group size of 1 and, if the device supports it, 8. Check that both
+  run with that work-group size and report the `compile_work_group_size` of
+  the attribute kernel, and that a different work-group size throws
+  `errc::nd_range` for the `nd_item` operator.
+* Check that an embedded `sub_group_size` applies to every function call
+  operator by launching a kernel with an `nd_item<1>` and an `nd_item<2>`
+  operator, and checking the sub-group size and `compile_sub_group_size` of
+  both.
+* Check that a properties list with `work_group_size<64>`,
+  `work_group_size_hint<64>` and `sub_group_size` applies all of them, for
+  each supported sub-group size for which the device supports work-groups of
+  64 work-items with `64 / size` sub-groups.
+* Check that a kernel whose `get` returns `khr::empty_properties_t` reports the
+  same `compile_work_group_size` and `compile_sub_group_size` as the same
+  kernel without `get`.
+
+== Specification issues
+
+The specification requires the return type `R` of `get` to satisfy
+`khr::is_property_for_v<R, khr::property::tag::kernel>` or
+`khr::is_property_list_for_v<R, khr::property::tag::kernel>`. The
+`sycl_khr_properties` extension renamed `is_property_list_for` to
+`is_property_or_list_for` without changing its meaning, and the old trait
+already covered single properties. The tests therefore read the requirement as
+`khr::is_property_or_list_for_v<R, khr::property::tag::kernel>`, which is also
+`true` for the empty properties list.
+
+== Requirements that are not tested
+
+* That the old-style `is_property` and `is_property_of` traits are `false` for
+  the kernel properties. `sycl_khr_properties` states this only for the
+  properties it defines, and this extension does not restate it.
+
+* Mandates clauses, and the requirements that the return type of `get` is a
+  property or properties list for `tag::kernel` and that the attribute
+  arguments of a call operator match the embedded properties, because
+  violating them makes the program ill-formed.
+* The effect of `work_group_size_hint`, because it is implementation-defined.
+* That `compile_work_group_size` returns the dimensions of `work_group_size` in
+  a specific order, because how `compile_work_group_size` reports the
+  `reqd_work_group_size` dimensions is a requirement of the core
+  specification. This extension only requires the result to equal that of the
+  attribute, which is what the tests check.
+* That a lambda expression cannot embed properties, because the note in the
+  specification is informative.
